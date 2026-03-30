@@ -36,10 +36,16 @@ var (
 
 	CronParser = cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
 
-	AddressRegex = "^0x[0-9a-f]{40}$"
-	AddressRe    = regexp.MustCompile(AddressRegex)
-	SigRegex     = "^0x[0-9a-f]{8}$"
-	SigRe        = regexp.MustCompile(SigRegex)
+	AddressRegex   = "^0x[0-9a-f]{40}$"
+	AddressRegexCI = "^0x[0-9a-fA-F]{40}$"
+	AddressRe      = regexp.MustCompile(AddressRegex)
+	SigRegex       = "^0x[0-9a-f]{8}$"
+	SigRegexCI     = "^0x[0-9a-fA-F]{8}$"
+	SigRe          = regexp.MustCompile(SigRegex)
+
+	// Schema-only patterns
+	CronPattern       = `^(\S+\s+){4}\S+$`
+	ActionNamePattern = `^[a-zA-Z][a-zA-Z0-9_-]*$`
 
 	MsgTriggerTypeNotSupported             = "trigger type '%s' not supported, supported types %s"
 	MsgTriggerTypeMismatch                 = "trigger type '%s' different from configured trigger"

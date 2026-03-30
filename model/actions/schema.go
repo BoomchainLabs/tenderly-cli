@@ -37,33 +37,28 @@ func GenerateJSONSchemaString() (string, error) {
 func buildDefs() map[string]interface{} {
 	defs := map[string]interface{}{
 		// Primitive types
-		"StrField":       defStrField(),
-		"NetworkField":   defNetworkField(),
-		"AddressValue":   defAddressValue(),
-		"AddressField":   defAddressField(),
-		"SignatureValue": defSignatureValue(),
-		"IntValue":       defIntValue(),
-		"IntField":       defIntField(),
-		"StatusField":    defStatusField(),
-		"Hex64":          defHex64(),
-		"AnyValue":       defAnyValue(),
-		"MapValue":       defMapValue(),
+		"StrField":              defStrField(),
+		"NetworkField":          defNetworkField(),
+		"AddressValue":          defAddressValue(),
+		"AddressField":          defAddressField(),
+		"SignatureValue":        defSignatureValue(),
+		"IntValue":              defIntValue(),
+		"IntField":              defIntField(),
+		"StatusField":           defStatusField(),
+		"TransactionStatusField": defTransactionStatusField(),
+		"Hex64":                 defHex64(),
 
 		// Composite types
-		"ContractValue":      defContractValue(),
-		"AccountValue":       defAccountValue(),
-		"ParameterCondValue": defParameterCondValue(),
-		"FunctionValue":      defFunctionValue(),
-		"FunctionField":      defFunctionField(),
-		"EventEmittedValue":  defEventEmittedValue(),
-		"EventEmittedField":  defEventEmittedField(),
-		"LogEmittedValue":    defLogEmittedValue(),
-		"LogEmittedField":    defLogEmittedField(),
-		"StateChangedValue":  defStateChangedValue(),
-		"StateChangedField":  defStateChangedField(),
-		"EthBalanceValue":    defEthBalanceValue(),
-		"EthBalanceField":    defEthBalanceField(),
-		"TransactionFilter":  defTransactionFilter(),
+		"ContractValue":           defContractValue(),
+		"AddressOnlyContractValue": defAddressOnlyContractValue(),
+		"ParameterCondValue":      defParameterCondValue(),
+		"FunctionValue":           defFunctionValue(),
+		"FunctionField":           defFunctionField(),
+		"EventEmittedValue":       defEventEmittedValue(),
+		"EventEmittedField":       defEventEmittedField(),
+		"LogEmittedValue":         defLogEmittedValue(),
+		"LogEmittedField":         defLogEmittedField(),
+		"TransactionFilter":       defTransactionFilter(),
 
 		// Trigger types
 		"PeriodicTrigger":    defPeriodicTrigger(),
@@ -108,7 +103,7 @@ func defNetworkField() map[string]interface{} {
 func defAddressValue() map[string]interface{} {
 	return obj(
 		"type", "string",
-		"pattern", AddressRegex,
+		"pattern", AddressRegexCI,
 	)
 }
 
@@ -119,7 +114,7 @@ func defAddressField() map[string]interface{} {
 func defSignatureValue() map[string]interface{} {
 	return obj(
 		"oneOf", arr(
-			obj("type", "string", "pattern", SigRegex),
+			obj("type", "string", "pattern", SigRegexCI),
 			obj("type", "integer"),
 		),
 	)
@@ -145,37 +140,19 @@ func defIntField() map[string]interface{} {
 }
 
 func defStatusField() map[string]interface{} {
-	return singleOrArray(obj("type", "string"))
+	return singleOrArray(obj("type", "string", "enum", arr("success", "fail")))
+}
+
+func defTransactionStatusField() map[string]interface{} {
+	return singleOrArray(obj("type", "string", "enum", arr("mined", "confirmed10")))
 }
 
 func defHex64() map[string]interface{} {
 	return obj(
 		"oneOf", arr(
-			obj("type", "string", "pattern", "^0x"),
+			obj("type", "string", "pattern", "^0x[0-9a-fA-F]+$"),
 			obj("type", "integer"),
 		),
-	)
-}
-
-func defAnyValue() map[string]interface{} {
-	return obj(
-		"oneOf", arr(
-			obj("type", "string"),
-			refDef("IntValue"),
-			refDef("MapValue"),
-		),
-	)
-}
-
-func defMapValue() map[string]interface{} {
-	return obj(
-		"type", "object",
-		"properties", obj(
-			"key", obj("type", "string"),
-			"value", refDef("AnyValue"),
-		),
-		"required", arr("key", "value"),
-		"additionalProperties", false,
 	)
 }
 
@@ -196,7 +173,9 @@ func defContractValue() map[string]interface{} {
 	)
 }
 
-func defAccountValue() map[string]interface{} {
+// defAddressOnlyContractValue is a contract reference with only address (no invocation).
+// Used by logEmitted where invocation is not supported.
+func defAddressOnlyContractValue() map[string]interface{} {
 	return obj(
 		"type", "object",
 		"properties", obj(
@@ -207,12 +186,29 @@ func defAccountValue() map[string]interface{} {
 	)
 }
 
+func defStrValue() map[string]interface{} {
+	return obj(
+		"oneOf", arr(
+			obj("type", "string"),
+			obj(
+				"type", "object",
+				"properties", obj(
+					"exact", obj("type", "string"),
+					"not", obj("type", "boolean"),
+				),
+				"required", arr("exact"),
+				"additionalProperties", false,
+			),
+		),
+	)
+}
+
 func defParameterCondValue() map[string]interface{} {
 	return obj(
 		"type", "object",
 		"properties", obj(
 			"name", obj("type", "string"),
-			"string", obj("type", "string"),
+			"string", defStrValue(),
 			"int", refDef("IntValue"),
 		),
 		"required", arr("name"),
@@ -227,8 +223,16 @@ func defFunctionValue() map[string]interface{} {
 			"contract", refDef("ContractValue"),
 			"signature", refDef("SignatureValue"),
 			"name", obj("type", "string"),
-			"parameter", refDef("MapValue"),
+			"parameters", obj(
+				"type", "array",
+				"items", refDef("ParameterCondValue"),
+			),
 			"not", obj("type", "boolean"),
+		),
+		"required", arr("contract"),
+		"oneOf", arr(
+			obj("required", arr("signature")),
+			obj("required", arr("name")),
 		),
 		"additionalProperties", false,
 	)
@@ -251,6 +255,11 @@ func defEventEmittedValue() map[string]interface{} {
 			),
 			"not", obj("type", "boolean"),
 		),
+		"required", arr("contract"),
+		"oneOf", arr(
+			obj("required", arr("id")),
+			obj("required", arr("name")),
+		),
 		"additionalProperties", false,
 	)
 }
@@ -268,7 +277,7 @@ func defLogEmittedValue() map[string]interface{} {
 				"items", refDef("Hex64"),
 				"minItems", 1,
 			),
-			"contract", refDef("ContractValue"),
+			"contract", refDef("AddressOnlyContractValue"),
 			"matchAny", obj("type", "boolean"),
 			"not", obj("type", "boolean"),
 		),
@@ -279,41 +288,6 @@ func defLogEmittedValue() map[string]interface{} {
 
 func defLogEmittedField() map[string]interface{} {
 	return singleOrArray(refDef("LogEmittedValue"))
-}
-
-func defStateChangedValue() map[string]interface{} {
-	return obj(
-		"type", "object",
-		"properties", obj(
-			"contract", refDef("ContractValue"),
-			"key", obj("type", "string"),
-			"field", obj("type", "string"),
-			"value", refDef("AnyValue"),
-			"previousValue", refDef("AnyValue"),
-		),
-		"additionalProperties", false,
-	)
-}
-
-func defStateChangedField() map[string]interface{} {
-	return singleOrArray(refDef("StateChangedValue"))
-}
-
-func defEthBalanceValue() map[string]interface{} {
-	return obj(
-		"type", "object",
-		"properties", obj(
-			"value", refDef("IntValue"),
-			"account", refDef("AccountValue"),
-			"contract", refDef("ContractValue"),
-		),
-		"required", arr("value"),
-		"additionalProperties", false,
-	)
-}
-
-func defEthBalanceField() map[string]interface{} {
-	return singleOrArray(refDef("EthBalanceValue"))
 }
 
 func defTransactionFilter() map[string]interface{} {
@@ -332,8 +306,14 @@ func defTransactionFilter() map[string]interface{} {
 			"function", refDef("FunctionField"),
 			"eventEmitted", refDef("EventEmittedField"),
 			"logEmitted", refDef("LogEmittedField"),
-			"ethBalance", refDef("EthBalanceField"),
-			"stateChanged", refDef("StateChangedField"),
+		),
+		"required", arr("network"),
+		"anyOf", arr(
+			obj("required", arr("from")),
+			obj("required", arr("to")),
+			obj("required", arr("function")),
+			obj("required", arr("eventEmitted")),
+			obj("required", arr("logEmitted")),
 		),
 		"additionalProperties", false,
 	)
@@ -344,22 +324,19 @@ func defTransactionFilter() map[string]interface{} {
 func defPeriodicTrigger() map[string]interface{} {
 	return obj(
 		"type", "object",
+		"properties", obj(
+			"interval", obj(
+				"type", "string",
+				"enum", toInterfaceSlice(Intervals),
+			),
+			"cron", obj(
+				"type", "string",
+				"pattern", CronPattern,
+			),
+		),
 		"oneOf", arr(
-			obj(
-				"properties", obj(
-					"interval", obj(
-						"type", "string",
-						"enum", toInterfaceSlice(Intervals),
-					),
-				),
-				"required", arr("interval"),
-			),
-			obj(
-				"properties", obj(
-					"cron", obj("type", "string"),
-				),
-				"required", arr("cron"),
-			),
+			obj("required", arr("interval")),
+			obj("required", arr("cron")),
 		),
 		"additionalProperties", false,
 	)
@@ -394,7 +371,7 @@ func defTransactionTrigger() map[string]interface{} {
 	return obj(
 		"type", "object",
 		"properties", obj(
-			"status", refDef("StatusField"),
+			"status", refDef("TransactionStatusField"),
 			"filters", obj(
 				"type", "array",
 				"items", refDef("TransactionFilter"),
@@ -457,7 +434,7 @@ func defActionSpec() map[string]interface{} {
 			),
 			"trigger", refDef("TriggerUnparsed"),
 		),
-		"required", arr("function", "trigger", "execution_type"),
+		"required", arr("function", "trigger"),
 		"additionalProperties", false,
 	)
 }
@@ -475,7 +452,10 @@ func defProjectActions() map[string]interface{} {
 			"specs", obj(
 				"type", "object",
 				"description", "Map of action name to action spec",
-				"additionalProperties", refDef("ActionSpec"),
+				"patternProperties", obj(
+					ActionNamePattern, refDef("ActionSpec"),
+				),
+				"additionalProperties", false,
 			),
 		),
 		"required", arr("runtime", "sources", "specs"),

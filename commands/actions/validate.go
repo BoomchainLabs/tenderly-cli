@@ -11,6 +11,7 @@ import (
 	"github.com/tenderly/tenderly-cli/commands"
 	"github.com/tenderly/tenderly-cli/config"
 	actionsModel "github.com/tenderly/tenderly-cli/model/actions"
+	"gopkg.in/yaml.v3"
 )
 
 var validateJSON bool
@@ -85,7 +86,14 @@ func runValidation() *validateOutput {
 	}
 
 	// Phase 2: Go-level validation
-	allActions := MustGetActions()
+	// Parse actions from YAML directly (avoid MustGetActions which calls os.Exit)
+	var tenderlyYaml actionsTenderlyYaml
+	if err := yaml.Unmarshal(content, &tenderlyYaml); err != nil {
+		result.Valid = false
+		result.SchemaErrors = append(result.SchemaErrors, fmt.Sprintf("failed parsing YAML: %s", err))
+		return result
+	}
+	allActions := tenderlyYaml.Actions
 	projectsToValidate := allActions
 	if actionsProjectName != "" {
 		projectsToValidate = make(map[string]actionsModel.ProjectActions)

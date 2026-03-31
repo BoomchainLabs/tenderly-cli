@@ -1,6 +1,8 @@
 package actions
 
 import (
+	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 
@@ -12,7 +14,10 @@ import (
 	"github.com/tenderly/tenderly-cli/userError"
 )
 
+var validateJSON bool
+
 func init() {
+	validateCmd.Flags().BoolVar(&validateJSON, "json", false, "Output validation results as JSON")
 	actionsCmd.AddCommand(validateCmd)
 }
 
@@ -23,8 +28,33 @@ var validateCmd = &cobra.Command{
 	Run:   validateFunc,
 }
 
+// JSON output types
+
+type validateOutput struct {
+	Valid         bool                  `json:"valid"`
+	SchemaErrors []string              `json:"schema_errors,omitempty"`
+	TriggerErrors []triggerErrorOutput  `json:"trigger_errors,omitempty"`
+}
+
+type triggerErrorOutput struct {
+	Project string   `json:"project"`
+	Action  string   `json:"action"`
+	Errors  []string `json:"errors"`
+}
+
 func validateFunc(cmd *cobra.Command, args []string) {
+	if validateJSON {
+		logrus.SetLevel(logrus.FatalLevel)
+	}
+
 	if !config.IsAnyActionsInit() {
+		if validateJSON {
+			printValidateJSON(&validateOutput{
+				Valid:        false,
+				SchemaErrors: []string{"actions not initialized: tenderly.yaml not found"},
+			})
+			os.Exit(1)
+		}
 		logrus.Error(commands.Colorizer.Sprintf(
 			"Actions not initialized. Are you in the right directory? Run %s to initialize project.",
 			commands.Colorizer.Bold(commands.Colorizer.Red("tenderly actions init")),
@@ -34,25 +64,40 @@ func validateFunc(cmd *cobra.Command, args []string) {
 
 	content, err := config.ReadProjectConfig()
 	if err != nil {
+		if validateJSON {
+			printValidateJSON(&validateOutput{
+				Valid:        false,
+				SchemaErrors: []string{fmt.Sprintf("failed reading tenderly.yaml: %s", err)},
+			})
+			os.Exit(1)
+		}
 		userError.LogErrorf("failed reading project config: %s",
 			userError.NewUserError(err, "Failed reading project's tenderly.yaml config."),
 		)
 		os.Exit(1)
 	}
 
-	hasErrors := false
+	result := &validateOutput{Valid: true}
 
 	// Phase 1: JSON Schema validation
 	logrus.Info("\nValidating against JSON Schema...")
 	schemaErrors, err := actionsModel.ValidateConfig(content)
 	if err != nil {
+		if validateJSON {
+			printValidateJSON(&validateOutput{
+				Valid:        false,
+				SchemaErrors: []string{fmt.Sprintf("schema validation error: %s", err)},
+			})
+			os.Exit(1)
+		}
 		userError.LogErrorf("schema validation failed: %s",
 			userError.NewUserError(err, "Failed to run schema validation."),
 		)
 		os.Exit(1)
 	}
 	if len(schemaErrors) > 0 {
-		hasErrors = true
+		result.Valid = false
+		result.SchemaErrors = schemaErrors
 		for _, e := range schemaErrors {
 			logrus.Info(commands.Colorizer.Red("  " + e))
 		}
@@ -64,7 +109,6 @@ func validateFunc(cmd *cobra.Command, args []string) {
 	logrus.Info("\nValidating triggers configuration...")
 	allActions := MustGetActions()
 
-	// Filter to specific project if --project flag is set
 	projectsToValidate := allActions
 	if actionsProjectName != "" {
 		projectsToValidate = make(map[string]actionsModel.ProjectActions)
@@ -74,6 +118,13 @@ func validateFunc(cmd *cobra.Command, args []string) {
 			}
 		}
 		if len(projectsToValidate) == 0 {
+			if validateJSON {
+				printValidateJSON(&validateOutput{
+					Valid:        false,
+					SchemaErrors: []string{fmt.Sprintf("project %s not found in tenderly.yaml", actionsProjectName)},
+				})
+				os.Exit(1)
+			}
 			logrus.Error(commands.Colorizer.Sprintf(
 				"Project %s not found in tenderly.yaml.",
 				commands.Colorizer.Bold(commands.Colorizer.Red(actionsProjectName)),
@@ -87,9 +138,13 @@ func validateFunc(cmd *cobra.Command, args []string) {
 			commands.Colorizer.Bold(commands.Colorizer.Blue(slug)),
 		))
 
-		// Validate runtime
 		if !actionsModel.IsRuntimeSupported(pa.Runtime) {
-			hasErrors = true
+			result.Valid = false
+			result.TriggerErrors = append(result.TriggerErrors, triggerErrorOutput{
+				Project: slug,
+				Action:  "",
+				Errors:  []string{fmt.Sprintf("invalid runtime %s", pa.Runtime)},
+			})
 			logrus.Info(commands.Colorizer.Sprintf(
 				"    %s Invalid runtime %s. Supported: {%s}",
 				commands.Colorizer.Red("x"),
@@ -99,11 +154,12 @@ func validateFunc(cmd *cobra.Command, args []string) {
 		}
 
 		for name, spec := range pa.Specs {
-			// Validate execution type
+			var actionErrors []string
+
 			if spec.ExecutionType != actionsModel.ParallelExecutionType &&
 				spec.ExecutionType != actionsModel.SequentialExecutionType &&
 				spec.ExecutionType != "" {
-				hasErrors = true
+				actionErrors = append(actionErrors, fmt.Sprintf("invalid execution_type %s", spec.ExecutionType))
 				logrus.Info(commands.Colorizer.Sprintf(
 					"    %s %s: invalid execution_type %s",
 					commands.Colorizer.Red("x"),
@@ -112,44 +168,58 @@ func validateFunc(cmd *cobra.Command, args []string) {
 				))
 			}
 
-			// Parse trigger
 			if err := spec.Parse(); err != nil {
-				hasErrors = true
+				actionErrors = append(actionErrors, fmt.Sprintf("failed parsing trigger: %s", err))
 				logrus.Info(commands.Colorizer.Sprintf(
 					"    %s %s: failed parsing trigger: %s",
 					commands.Colorizer.Red("x"),
 					commands.Colorizer.Bold(name),
 					err,
 				))
-				continue
-			}
-
-			// Validate trigger
-			response := spec.TriggerParsed.Validate(actionsModel.ValidatorContext(name + ".trigger"))
-			for _, i := range response.Infos {
-				logrus.Info(commands.Colorizer.Sprintf("    %s %s",
-					commands.Colorizer.Blue("i"),
-					commands.Colorizer.Blue(i),
-				))
-			}
-			if len(response.Errors) > 0 {
-				hasErrors = true
-				for _, e := range response.Errors {
+			} else {
+				response := spec.TriggerParsed.Validate(actionsModel.ValidatorContext(name + ".trigger"))
+				for _, i := range response.Infos {
 					logrus.Info(commands.Colorizer.Sprintf("    %s %s",
-						commands.Colorizer.Red("x"),
-						commands.Colorizer.Red(e),
+						commands.Colorizer.Blue("i"),
+						commands.Colorizer.Blue(i),
 					))
 				}
-			} else {
-				logrus.Info(commands.Colorizer.Sprintf("    %s %s",
-					commands.Colorizer.Green("ok"),
-					commands.Colorizer.Green(name),
-				))
+				if len(response.Errors) > 0 {
+					actionErrors = append(actionErrors, response.Errors...)
+					for _, e := range response.Errors {
+						logrus.Info(commands.Colorizer.Sprintf("    %s %s",
+							commands.Colorizer.Red("x"),
+							commands.Colorizer.Red(e),
+						))
+					}
+				} else {
+					logrus.Info(commands.Colorizer.Sprintf("    %s %s",
+						commands.Colorizer.Green("ok"),
+						commands.Colorizer.Green(name),
+					))
+				}
+			}
+
+			if len(actionErrors) > 0 {
+				result.Valid = false
+				result.TriggerErrors = append(result.TriggerErrors, triggerErrorOutput{
+					Project: slug,
+					Action:  name,
+					Errors:  actionErrors,
+				})
 			}
 		}
 	}
 
-	if hasErrors {
+	if validateJSON {
+		printValidateJSON(result)
+		if !result.Valid {
+			os.Exit(1)
+		}
+		return
+	}
+
+	if !result.Valid {
 		logrus.Info("")
 		logrus.Error(commands.Colorizer.Bold(commands.Colorizer.Red("Validation failed.")))
 		os.Exit(1)
@@ -158,4 +228,9 @@ func validateFunc(cmd *cobra.Command, args []string) {
 	logrus.Info(commands.Colorizer.Sprintf("\n%s",
 		commands.Colorizer.Bold(commands.Colorizer.Green("Validation passed.")),
 	))
+}
+
+func printValidateJSON(result *validateOutput) {
+	bytes, _ := json.MarshalIndent(result, "", "  ")
+	fmt.Println(string(bytes))
 }

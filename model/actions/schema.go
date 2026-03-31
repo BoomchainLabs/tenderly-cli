@@ -6,12 +6,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/santhosh-tekuri/jsonschema/v6"
-	"golang.org/x/text/message"
+	"github.com/santhosh-tekuri/jsonschema/v5"
 	"gopkg.in/yaml.v3"
 )
-
-var defaultPrinter = message.NewPrinter(message.MatchLanguage("en"))
 
 // GenerateJSONSchema returns the JSON Schema for tenderly.yaml as a map.
 func GenerateJSONSchema() map[string]interface{} {
@@ -60,13 +57,8 @@ func ValidateConfig(yamlContent []byte) ([]string, error) {
 		return nil, fmt.Errorf("failed to marshal schema: %w", err)
 	}
 
-	sch, err := jsonschema.UnmarshalJSON(bytes.NewReader(schemaJSON))
-	if err != nil {
-		return nil, fmt.Errorf("failed to unmarshal schema: %w", err)
-	}
-
 	c := jsonschema.NewCompiler()
-	if err := c.AddResource("schema.json", sch); err != nil {
+	if err := c.AddResource("schema.json", bytes.NewReader(schemaJSON)); err != nil {
 		return nil, fmt.Errorf("failed to add schema resource: %w", err)
 	}
 	compiled, err := c.Compile("schema.json")
@@ -94,26 +86,30 @@ func ValidateConfig(yamlContent []byte) ([]string, error) {
 // It collapses anyOf/oneOf branches into a single message instead of listing every branch.
 func collectSchemaErrors(err *jsonschema.ValidationError, out *[]string) {
 	if len(err.Causes) == 0 {
-		path := "/" + strings.Join(err.InstanceLocation, "/")
-		msg := err.ErrorKind.LocalizedString(defaultPrinter)
-		*out = append(*out, fmt.Sprintf("%s: %s", path, msg))
+		path := err.InstanceLocation
+		if path == "" {
+			path = "/"
+		}
+		*out = append(*out, fmt.Sprintf("%s: %s", path, err.Message))
 		return
 	}
 
 	// Collapse anyOf/oneOf branches into a single readable message.
-	keywords := err.ErrorKind.KeywordPath()
-	if len(keywords) > 0 {
-		kw := keywords[len(keywords)-1]
-		if kw == "anyOf" {
-			path := "/" + strings.Join(err.InstanceLocation, "/")
-			*out = append(*out, fmt.Sprintf("%s: must satisfy at least one constraint (check required fields)", path))
-			return
+	if strings.Contains(err.Message, "anyOf") {
+		path := err.InstanceLocation
+		if path == "" {
+			path = "/"
 		}
-		if kw == "oneOf" {
-			path := "/" + strings.Join(err.InstanceLocation, "/")
-			*out = append(*out, fmt.Sprintf("%s: must match exactly one option", path))
-			return
+		*out = append(*out, fmt.Sprintf("%s: must satisfy at least one constraint (check required fields)", path))
+		return
+	}
+	if strings.Contains(err.Message, "oneOf") {
+		path := err.InstanceLocation
+		if path == "" {
+			path = "/"
 		}
+		*out = append(*out, fmt.Sprintf("%s: must match exactly one option", path))
+		return
 	}
 
 	for _, cause := range err.Causes {
@@ -164,6 +160,7 @@ func buildDefs() map[string]interface{} {
 		// Composite types
 		"ContractValue":           defContractValue(),
 		"AddressOnlyContractValue": defAddressOnlyContractValue(),
+		"StrValue":                defStrValue(),
 		"ParameterCondValue":      defParameterCondValue(),
 		"FunctionValue":           defFunctionValue(),
 		"FunctionField":           defFunctionField(),
@@ -321,7 +318,7 @@ func defParameterCondValue() map[string]interface{} {
 		"type", "object",
 		"properties", obj(
 			"name", obj("type", "string"),
-			"string", defStrValue(),
+			"string", refDef("StrValue"),
 			"int", refDef("IntValue"),
 		),
 		"required", arr("name"),

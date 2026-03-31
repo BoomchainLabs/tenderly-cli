@@ -5,3 +5,6 @@
 
 dist/*
 build/*
+
+# Generated schema file
+tenderly-schema.json

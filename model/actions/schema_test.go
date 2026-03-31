@@ -2,6 +2,7 @@ package actions
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -32,7 +33,7 @@ func TestGenerateJSONSchema_HasAllDefs(t *testing.T) {
 		"StrField", "NetworkField", "AddressValue", "AddressField",
 		"SignatureValue", "IntValue", "IntField", "StatusField",
 		"TransactionStatusField", "Hex64",
-		"ContractValue", "AddressOnlyContractValue", "ParameterCondValue",
+		"ContractValue", "AddressOnlyContractValue", "StrValue", "ParameterCondValue",
 		"FunctionValue", "FunctionField",
 		"EventEmittedValue", "EventEmittedField",
 		"LogEmittedValue", "LogEmittedField",
@@ -219,18 +220,21 @@ func TestGenerateJSONSchema_FunctionValueHasParameters(t *testing.T) {
 	assert.Equal(t, "array", paramsObj["type"])
 }
 
-func TestGenerateJSONSchema_ParameterCondStringSupportsNotForm(t *testing.T) {
+func TestGenerateJSONSchema_ParameterCondStringRefersToStrValue(t *testing.T) {
 	schema := GenerateJSONSchema()
 	defs := schema["$defs"].(map[string]interface{})
+
+	// ParameterCondValue.string should be a $ref to StrValue
 	pcv := defs["ParameterCondValue"].(map[string]interface{})
 	props := pcv["properties"].(map[string]interface{})
-	strField := props["string"].(map[string]interface{})
-	oneOf := strField["oneOf"].([]interface{})
-	require.Len(t, oneOf, 2, "string field should support plain string OR {exact, not} object")
+	strRef := props["string"].(map[string]interface{})
+	assert.Equal(t, "#/$defs/StrValue", strRef["$ref"], "string field should $ref StrValue")
 
-	// First branch: plain string
+	// StrValue should support plain string OR {exact, not} object
+	strValue := defs["StrValue"].(map[string]interface{})
+	oneOf := strValue["oneOf"].([]interface{})
+	require.Len(t, oneOf, 2)
 	assert.Equal(t, "string", oneOf[0].(map[string]interface{})["type"])
-	// Second branch: object with exact/not
 	objBranch := oneOf[1].(map[string]interface{})
 	assert.Equal(t, "object", objBranch["type"])
 	objProps := objBranch["properties"].(map[string]interface{})
@@ -293,4 +297,164 @@ func TestGenerateJSONSchema_SignaturePatternCaseInsensitive(t *testing.T) {
 	oneOf := sig["oneOf"].([]interface{})
 	strBranch := oneOf[0].(map[string]interface{})
 	assert.Equal(t, SigRegexCI, strBranch["pattern"], "schema should use case-insensitive sig regex")
+}
+
+// --- ValidateConfig integration tests ---
+
+func TestValidateConfig_ValidConfig(t *testing.T) {
+	yaml := `
+actions:
+  myuser/myproject:
+    runtime: v2
+    sources: actions
+    specs:
+      myAction:
+        function: "actions/fn:handler"
+        trigger:
+          type: webhook
+          webhook:
+            authenticated: true
+`
+	errors, err := ValidateConfig([]byte(yaml))
+	require.NoError(t, err)
+	assert.Empty(t, errors, "valid config should produce no errors")
+}
+
+func TestValidateConfig_InvalidRuntime(t *testing.T) {
+	yaml := `
+actions:
+  myuser/myproject:
+    runtime: v99
+    sources: actions
+    specs:
+      myAction:
+        function: "actions/fn:handler"
+        trigger:
+          type: webhook
+          webhook: {}
+`
+	errors, err := ValidateConfig([]byte(yaml))
+	require.NoError(t, err)
+	require.NotEmpty(t, errors, "invalid runtime should produce errors")
+	found := false
+	for _, e := range errors {
+		if strings.Contains(e, "v1") && strings.Contains(e, "v2") {
+			found = true
+		}
+	}
+	assert.True(t, found, "error should mention valid runtimes, got: %v", errors)
+}
+
+func TestValidateConfig_MissingMinFilterConstraint(t *testing.T) {
+	yaml := `
+actions:
+  myuser/myproject:
+    runtime: v2
+    sources: actions
+    specs:
+      myAction:
+        function: "actions/fn:handler"
+        trigger:
+          type: transaction
+          transaction:
+            status: mined
+            filters:
+              - network: 1
+`
+	errors, err := ValidateConfig([]byte(yaml))
+	require.NoError(t, err)
+	require.NotEmpty(t, errors, "filter without from/to/function/eventEmitted/logEmitted should fail")
+}
+
+func TestValidateConfig_InvalidActionName(t *testing.T) {
+	yaml := `
+actions:
+  myuser/myproject:
+    runtime: v2
+    sources: actions
+    specs:
+      123-bad:
+        function: "actions/fn:handler"
+        trigger:
+          type: webhook
+          webhook: {}
+`
+	errors, err := ValidateConfig([]byte(yaml))
+	require.NoError(t, err)
+	require.NotEmpty(t, errors, "action name starting with digit should fail")
+}
+
+func TestValidateConfig_PeriodicBothIntervalAndCron(t *testing.T) {
+	yaml := `
+actions:
+  myuser/myproject:
+    runtime: v2
+    sources: actions
+    specs:
+      myAction:
+        function: "actions/fn:handler"
+        trigger:
+          type: periodic
+          periodic:
+            interval: "5m"
+            cron: "* * * * *"
+`
+	errors, err := ValidateConfig([]byte(yaml))
+	require.NoError(t, err)
+	require.NotEmpty(t, errors, "both interval and cron should fail oneOf")
+}
+
+func TestValidateConfig_ChecksummedAddress(t *testing.T) {
+	yaml := `
+actions:
+  myuser/myproject:
+    runtime: v2
+    sources: actions
+    specs:
+      myAction:
+        function: "actions/fn:handler"
+        trigger:
+          type: transaction
+          transaction:
+            status: mined
+            filters:
+              - network: 1
+                from: "0xAb5801a7D398351b8bE11C439e05C5B3259aeC9B"
+`
+	errors, err := ValidateConfig([]byte(yaml))
+	require.NoError(t, err)
+	assert.Empty(t, errors, "EIP-55 checksummed addresses should be accepted")
+}
+
+func TestValidateConfig_FunctionWithParameters(t *testing.T) {
+	yaml := `
+actions:
+  myuser/myproject:
+    runtime: v2
+    sources: actions
+    specs:
+      myAction:
+        function: "actions/fn:handler"
+        trigger:
+          type: transaction
+          transaction:
+            status: mined
+            filters:
+              - network: 1
+                function:
+                  contract:
+                    address: "0xdac17f958d2ee523a2206206994597c13d831ec7"
+                  name: transfer
+                  parameters:
+                    - name: amount
+                      int:
+                        gte: 1000
+                    - name: to
+                      string:
+                        exact: "0xdead"
+                        not: true
+`
+	errors, err := ValidateConfig([]byte(yaml))
+	require.NoError(t, err)
+	assert.Empty(t, errors, "function with parameters and string {exact, not} should be valid")
 }

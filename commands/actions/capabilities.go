@@ -11,21 +11,25 @@ import (
 	"github.com/tenderly/tenderly-cli/userError"
 )
 
+var includeSchema bool
+
 func init() {
+	capabilitiesCmd.Flags().BoolVar(&includeSchema, "include-schema", false, "Embed the full JSON Schema in the output")
 	actionsCmd.AddCommand(capabilitiesCmd)
 }
 
 type capabilitiesOutput struct {
-	Version                 string                 `json:"version"`
-	Commands                []commandInfo          `json:"commands"`
-	TriggerTypes            []string               `json:"trigger_types"`
-	Runtimes                []string               `json:"runtimes"`
-	ExecutionTypes          []string               `json:"execution_types"`
-	Intervals               []string               `json:"intervals"`
-	Invocations             []string               `json:"invocations"`
-	StatusValues            []string               `json:"status_values"`
-	TransactionStatusValues []string               `json:"transaction_status_values"`
-	Schema                  map[string]interface{} `json:"schema"`
+	Version                 string      `json:"version"`
+	Commands                []commandInfo `json:"commands"`
+	TriggerTypes            []string    `json:"trigger_types"`
+	Runtimes                []string    `json:"runtimes"`
+	ExecutionTypes          []string    `json:"execution_types"`
+	Intervals               []string    `json:"intervals"`
+	Invocations             []string    `json:"invocations"`
+	StatusValues            []string    `json:"status_values"`
+	TransactionStatusValues []string    `json:"transaction_status_values"`
+	SchemaCommand           string      `json:"schema_command"`
+	Schema                  interface{} `json:"schema,omitempty"`
 }
 
 type commandInfo struct {
@@ -55,7 +59,11 @@ var capabilitiesCmd = &cobra.Command{
 			Invocations:             actionsModel.Invocations,
 			StatusValues:            []string{"success", "fail"},
 			TransactionStatusValues: []string{"mined", "confirmed10"},
-			Schema:                  actionsModel.GenerateJSONSchema(),
+			SchemaCommand:           "tenderly actions schema",
+		}
+
+		if includeSchema {
+			out.Schema = actionsModel.GenerateJSONSchema()
 		}
 
 		bytes, err := json.MarshalIndent(out, "", "  ")

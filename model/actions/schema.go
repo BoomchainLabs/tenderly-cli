@@ -1,8 +1,17 @@
 package actions
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
+	"strings"
+
+	"github.com/santhosh-tekuri/jsonschema/v6"
+	"golang.org/x/text/message"
+	"gopkg.in/yaml.v3"
 )
+
+var defaultPrinter = message.NewPrinter(message.MatchLanguage("en"))
 
 // GenerateJSONSchema returns the JSON Schema for tenderly.yaml as a map.
 func GenerateJSONSchema() map[string]interface{} {
@@ -32,6 +41,110 @@ func GenerateJSONSchemaString() (string, error) {
 		return "", err
 	}
 	return string(bytes), nil
+}
+
+// ValidateConfig validates raw YAML content against the generated JSON Schema.
+// Returns a list of human-readable validation errors (empty if valid).
+func ValidateConfig(yamlContent []byte) ([]string, error) {
+	// Parse YAML into generic structure for JSON Schema validation
+	var doc interface{}
+	if err := yaml.Unmarshal(yamlContent, &doc); err != nil {
+		return nil, fmt.Errorf("failed to parse YAML: %w", err)
+	}
+	doc = convertYAMLToJSONCompatible(doc)
+
+	// Compile schema
+	schemaData := GenerateJSONSchema()
+	schemaJSON, err := json.Marshal(schemaData)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal schema: %w", err)
+	}
+
+	sch, err := jsonschema.UnmarshalJSON(bytes.NewReader(schemaJSON))
+	if err != nil {
+		return nil, fmt.Errorf("failed to unmarshal schema: %w", err)
+	}
+
+	c := jsonschema.NewCompiler()
+	if err := c.AddResource("schema.json", sch); err != nil {
+		return nil, fmt.Errorf("failed to add schema resource: %w", err)
+	}
+	compiled, err := c.Compile("schema.json")
+	if err != nil {
+		return nil, fmt.Errorf("failed to compile schema: %w", err)
+	}
+
+	// Validate
+	validationErr := compiled.Validate(doc)
+	if validationErr == nil {
+		return nil, nil
+	}
+
+	valErr, ok := validationErr.(*jsonschema.ValidationError)
+	if !ok {
+		return []string{validationErr.Error()}, nil
+	}
+
+	var errors []string
+	collectSchemaErrors(valErr, &errors)
+	return errors, nil
+}
+
+// collectSchemaErrors flattens nested validation errors into readable strings.
+// It collapses anyOf/oneOf branches into a single message instead of listing every branch.
+func collectSchemaErrors(err *jsonschema.ValidationError, out *[]string) {
+	if len(err.Causes) == 0 {
+		path := "/" + strings.Join(err.InstanceLocation, "/")
+		msg := err.ErrorKind.LocalizedString(defaultPrinter)
+		*out = append(*out, fmt.Sprintf("%s: %s", path, msg))
+		return
+	}
+
+	// Collapse anyOf/oneOf branches into a single readable message.
+	keywords := err.ErrorKind.KeywordPath()
+	if len(keywords) > 0 {
+		kw := keywords[len(keywords)-1]
+		if kw == "anyOf" {
+			path := "/" + strings.Join(err.InstanceLocation, "/")
+			*out = append(*out, fmt.Sprintf("%s: must satisfy at least one constraint (check required fields)", path))
+			return
+		}
+		if kw == "oneOf" {
+			path := "/" + strings.Join(err.InstanceLocation, "/")
+			*out = append(*out, fmt.Sprintf("%s: must match exactly one option", path))
+			return
+		}
+	}
+
+	for _, cause := range err.Causes {
+		collectSchemaErrors(cause, out)
+	}
+}
+
+// convertYAMLToJSONCompatible converts YAML-parsed maps (map[string]interface{})
+// and ensures all map keys are strings (YAML can produce map[interface{}]interface{}).
+func convertYAMLToJSONCompatible(v interface{}) interface{} {
+	switch val := v.(type) {
+	case map[string]interface{}:
+		result := make(map[string]interface{}, len(val))
+		for k, v := range val {
+			result[k] = convertYAMLToJSONCompatible(v)
+		}
+		return result
+	case map[interface{}]interface{}:
+		result := make(map[string]interface{}, len(val))
+		for k, v := range val {
+			result[fmt.Sprint(k)] = convertYAMLToJSONCompatible(v)
+		}
+		return result
+	case []interface{}:
+		for i, item := range val {
+			val[i] = convertYAMLToJSONCompatible(item)
+		}
+		return val
+	default:
+		return v
+	}
 }
 
 func buildDefs() map[string]interface{} {

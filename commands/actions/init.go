@@ -152,6 +152,7 @@ var initCmd = &cobra.Command{
 			}
 		}
 
+		config.SetProjectConfig("$schema", "./"+SchemaFileName)
 		config.MustWriteActionsInit(
 			projectSlug, &actionsModel.ProjectActions{
 				Runtime:      actionsModel.RuntimeV2,
@@ -160,6 +161,8 @@ var initCmd = &cobra.Command{
 				Specs:        specs,
 			},
 		)
+
+		mustWriteSchemaFile()
 
 		if actionsLanguage == LanguageJavaScript {
 			filePath := filepath.Join(sources, "example.js")
